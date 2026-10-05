@@ -357,8 +357,8 @@ function renderPlan() {
   $('#plan-totals').innerHTML = [...by].map(([cur, r]) => `
     <div class="total">
       <div class="cur">Ближайшие 30 дней, ${esc(cur)}</div>
-      <div class="sub2 income">+${esc(money(r.income, cur))}</div>
-      <div class="sub2 expense">−${esc(money(r.expense, cur))}</div>
+      ${r.income ? `<div class="sub2 income">+${esc(money(r.income, cur))}</div>` : ''}
+      ${r.expense ? `<div class="sub2 expense">−${esc(money(r.expense, cur))}</div>` : ''}
     </div>`).join('');
 
   const box = $('#plan-list');
