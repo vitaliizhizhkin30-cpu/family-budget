@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Семейный бюджет</title>
+  <meta name="theme-color" content="#14161a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Бюджет">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Вход -->
+<main id="view-login" class="center" hidden>
+  <form id="login-form" class="card login">
+    <h1>Семейный бюджет</h1>
+    <label>Email <input type="email" name="email" autocomplete="username" required></label>
+    <label>Пароль <input type="password" name="password" autocomplete="current-password" required></label>
+    <button class="btn primary" type="submit">Войти</button>
+    <p id="login-error" class="error" role="alert"></p>
+  </form>
+</main>
+
+<!-- Приложение -->
+<div id="view-app" hidden>
+  <header class="topbar">
+    <strong>Семейный бюджет</strong>
+    <span class="grow"></span>
+    <button class="icon-btn" id="theme-btn" title="Сменить тему" aria-label="Сменить тему"></button>
+    <button class="icon-btn" id="logout-btn" title="Выйти" aria-label="Выйти">⎋</button>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="overview">Обзор</button>
+    <button class="tab" data-tab="ops">Операции</button>
+  </nav>
+
+  <main class="content">
+    <section id="tab-overview">
+      <div id="totals" class="totals"></div>
+
+      <div class="section-head">
+        <h2>Счета</h2>
+        <button class="btn small" id="add-account-btn">+ Счёт</button>
+      </div>
+      <div id="accounts" class="list"></div>
+
+      <div class="section-head"><h2>Последние операции</h2></div>
+      <div id="recent" class="list"></div>
+    </section>
+
+    <section id="tab-ops" hidden>
+      <div class="section-head"><h2>Все операции</h2></div>
+      <div id="ops" class="list"></div>
+      <button class="btn" id="more-ops" hidden>Показать ещё</button>
+    </section>
+  </main>
+
+  <button class="fab" id="add-tx-btn" aria-label="Добавить операцию">+</button>
+</div>
+
+<!-- Диалог: операция -->
+<dialog id="tx-dialog">
+  <form id="tx-form" method="dialog" class="sheet">
+    <h3>Новая операция</h3>
+    <div class="seg" id="tx-kind">
+      <button type="button" data-kind="expense" class="active">Расход</button>
+      <button type="button" data-kind="income">Доход</button>
+    </div>
+    <label>Сумма <input name="amount" inputmode="decimal" autocomplete="off" placeholder="0" required></label>
+    <label>Счёт <select name="account" required></select></label>
+    <label>Категория <select name="category"></select></label>
+    <label>Дата <input type="date" name="date" required></label>
+    <label>Комментарий <input name="note" autocomplete="off" placeholder="необязательно"></label>
+    <p class="error" id="tx-error" role="alert"></p>
+    <div class="row">
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Диалог: счёт -->
+<dialog id="acc-dialog">
+  <form id="acc-form" method="dialog" class="sheet">
+    <h3>Новый счёт</h3>
+    <label>Название <input name="name" autocomplete="off" placeholder="Например: Сбер, карта" required></label>
+    <label>Тип
+      <select name="type">
+        <option value="card">Карта</option>
+        <option value="cash">Наличные</option>
+        <option value="other">Другое</option>
+      </select>
+    </label>
+    <label>Банк <input name="bank" autocomplete="off" placeholder="необязательно"></label>
+    <label>Валюта (код)
+      <input name="currency" list="currency-list" value="RUB" maxlength="8" autocomplete="off" required>
+      <datalist id="currency-list">
+        <option value="RUB"><option value="USD"><option value="EUR"><option value="GEL">
+        <option value="TRY"><option value="AMD"><option value="KZT"><option value="CNY">
+        <option value="AED"><option value="GBP">
+      </datalist>
+    </label>
+    <label>Текущий остаток <input name="balance" inputmode="decimal" autocomplete="off" value="0"></label>
+    <p class="error" id="acc-error" role="alert"></p>
+    <div class="row">
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn primary">Создать</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
