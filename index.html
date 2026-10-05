@@ -37,6 +37,7 @@
   <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="overview">Обзор</button>
     <button class="tab" data-tab="plan">План</button>
+    <button class="tab" data-tab="forecast">Прогноз</button>
     <button class="tab" data-tab="ops">Операции</button>
   </nav>
 
@@ -61,6 +62,19 @@
         <button class="btn small" id="add-plan-btn">+ В план</button>
       </div>
       <div id="plan-list" class="list"></div>
+    </section>
+
+    <section id="tab-forecast" hidden>
+      <div class="section-head">
+        <h2>Прогноз остатка</h2>
+        <select id="fc-months" class="compact" aria-label="Период прогноза">
+          <option value="1">1 месяц</option>
+          <option value="3" selected>3 месяца</option>
+          <option value="6">6 месяцев</option>
+        </select>
+      </div>
+      <p class="hint">Прогноз считается по текущим остаткам и тому, что есть во вкладке «План». Регулярные расходы (аренда, связь, подписки, средние траты на еду) нужно добавить в план с повтором, иначе прогноз получится слишком оптимистичным.</p>
+      <div id="forecast" class="fc-list"></div>
     </section>
 
     <section id="tab-ops" hidden>

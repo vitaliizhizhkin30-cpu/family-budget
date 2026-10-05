@@ -140,6 +140,7 @@ function render() {
   renderTotals();
   renderAccounts();
   renderPlan();
+  renderForecast();
   renderTxList($('#recent'), state.txs.slice(0, 5));
   renderTxList($('#ops'), state.txs.slice(0, state.txLimit));
   $('#more-ops').hidden = state.txs.length <= state.txLimit;
@@ -194,7 +195,7 @@ function renderTxList(box, list) {
 // ---------- вкладки ----------
 document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === b));
-  for (const name of ['overview', 'plan', 'ops']) $('#tab-' + name).hidden = b.dataset.tab !== name;
+  for (const name of ['overview', 'plan', 'forecast', 'ops']) $('#tab-' + name).hidden = b.dataset.tab !== name;
 }));
 $('#more-ops').addEventListener('click', () => { state.txLimit += 30; render(); });
 
@@ -319,6 +320,13 @@ function nextDue(iso, rec) {
   if (rec === 'weekly') return addDays(iso, 7);
   if (rec === 'monthly') return addMonths(iso, 1);
   if (rec === 'yearly') return addMonths(iso, 12);
+  return null;
+}
+
+function nthDue(iso, rec, k) {
+  if (rec === 'weekly') return addDays(iso, 7 * k);
+  if (rec === 'monthly') return addMonths(iso, k);
+  if (rec === 'yearly') return addMonths(iso, 12 * k);
   return null;
 }
 
@@ -523,6 +531,114 @@ document.addEventListener('click', (e) => {
   const planId = e.target.closest?.('[data-plan]')?.dataset.plan;
   if (planId) { const it = state.planned.find((p) => p.id === planId); if (it) openPlanDialog(it); }
 });
+
+// ---------- прогноз ----------
+function daysBetween(a, b) {
+  const [y1, m1, d1] = a.split('-').map(Number);
+  const [y2, m2, d2] = b.split('-').map(Number);
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000);
+}
+
+// События плана по одной валюте на период [today, end]. Повторяющиеся пункты разворачиваются.
+// Просроченный пункт считаем ожидаемым «сегодня».
+function planEvents(cur, today, end) {
+  const out = [];
+  for (const p of state.planned) {
+    if (p.currency !== cur) continue;
+    const delta = p.kind === 'income' ? p.amount : -p.amount;
+    const first = p.due_date < today ? today : p.due_date;
+    if (first <= end) out.push({ date: first, delta, title: p.title });
+    // k-е повторение считаем от исходной даты, чтобы «31-е» не залипало на 30-м
+    for (let k = 1; k < 400; k++) {
+      const d = nthDue(p.due_date, p.recurrence, k);
+      if (!d || d > end) break;
+      if (d >= today) out.push({ date: d, delta, title: p.title });
+    }
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : b.delta - a.delta));
+}
+
+function buildForecast(cur, today, end) {
+  const start = state.accounts.filter((a) => a.currency === cur).reduce((s, a) => s + a.balance, 0);
+  const events = planEvents(cur, today, end);
+  let bal = start;
+  const series = [{ date: today, bal }];
+  let min = { bal, date: today };
+  let firstNeg = bal < 0 ? today : null;
+  for (const ev of events) {
+    bal = Math.round((bal + ev.delta) * 100) / 100;
+    ev.bal = bal;
+    series.push({ date: ev.date, bal });
+    if (bal < min.bal) min = { bal, date: ev.date };
+    if (bal < 0 && !firstNeg) firstNeg = ev.date;
+  }
+  return { start, end: bal, events, series, min, firstNeg };
+}
+
+function forecastSvg(fc, today, end, idx) {
+  const W = 600, H = 150, pad = 10;
+  const span = Math.max(1, daysBetween(today, end));
+  const vals = fc.series.map((p) => p.bal);
+  const yMax = Math.max(0, ...vals), yMin = Math.min(0, ...vals);
+  const range = yMax - yMin || 1;
+  const x = (d) => pad + ((W - 2 * pad) * daysBetween(today, d)) / span;
+  const y = (v) => pad + ((H - 2 * pad) * (yMax - v)) / range;
+  let path = `M${x(today).toFixed(1)},${y(fc.series[0].bal).toFixed(1)}`;
+  for (const p of fc.series.slice(1)) path += ` H${x(p.date).toFixed(1)} V${y(p.bal).toFixed(1)}`;
+  path += ` H${(W - pad).toFixed(1)}`;
+  const zero = y(0).toFixed(1);
+  return `<svg class="fc-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="График прогноза остатка">
+    <defs>
+      <clipPath id="up${idx}"><rect x="0" y="0" width="${W}" height="${zero}"/></clipPath>
+      <clipPath id="dn${idx}"><rect x="0" y="${zero}" width="${W}" height="${H}"/></clipPath>
+    </defs>
+    <line x1="0" x2="${W}" y1="${zero}" y2="${zero}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
+    <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke" clip-path="url(#up${idx})"/>
+    <path d="${path}" fill="none" stroke="var(--expense)" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke" clip-path="url(#dn${idx})"/>
+  </svg>`;
+}
+
+function renderForecast() {
+  const months = Number($('#fc-months').value) || 3;
+  const today = todayLocal();
+  const end = addMonths(today, months);
+  const currencies = [...new Set([...state.accounts.map((a) => a.currency), ...state.planned.map((p) => p.currency)])].sort();
+  const box = $('#forecast');
+  if (!currencies.length) { box.innerHTML = '<div class="empty">Добавь счета и плановые пункты, чтобы увидеть прогноз.</div>'; return; }
+
+  box.innerHTML = currencies.map((cur, i) => {
+    const fc = buildForecast(cur, today, end);
+    const hasAccount = state.accounts.some((a) => a.currency === cur);
+    const verdict = fc.firstNeg
+      ? `<div class="fc-verdict bad">⚠ Остаток уходит в минус ${fc.firstNeg === today ? 'уже сейчас' : 'с ' + fmtDate(fc.firstNeg)}</div>`
+      : '<div class="fc-verdict ok">✓ В минус не уходит</div>';
+    const note = hasAccount ? '' : `<p class="hint">Счетов в ${esc(cur)} нет, прогноз считается от нуля.</p>`;
+    const rows = fc.events.map((ev) => `
+      <div class="fc-ev">
+        <span class="d">${fmtDate(ev.date)}</span>
+        <span>${esc(ev.title)}</span>
+        <span class="amount ${ev.delta > 0 ? 'income' : 'expense'}">${ev.delta > 0 ? '+' : '−'}${esc(money(Math.abs(ev.delta), cur))}</span>
+        <span class="bal ${ev.bal < 0 ? 'neg' : ''}">${esc(money(ev.bal, cur))}</span>
+      </div>`).join('');
+    return `
+    <div class="fc-card">
+      <h3>${esc(cur)}</h3>
+      ${verdict}${note}
+      <div class="fc-stats">
+        <div class="fc-stat"><div class="lbl">Сейчас</div><div class="val">${esc(money(fc.start, cur))}</div></div>
+        <div class="fc-stat"><div class="lbl">Через ${months} мес.</div><div class="val">${esc(money(fc.end, cur))}</div></div>
+        <div class="fc-stat"><div class="lbl">Минимум${fc.events.length ? ' (' + fmtDate(fc.min.date) + ')' : ''}</div><div class="val">${esc(money(fc.min.bal, cur))}</div></div>
+      </div>
+      ${forecastSvg(fc, today, end, i)}
+      <div class="fc-axis"><span>${fmtDate(today)}</span><span>${fmtDate(end)}</span></div>
+      ${fc.events.length
+        ? `<details><summary>События и остаток после каждого (${fc.events.length})</summary><div class="fc-events">${rows}</div></details>`
+        : '<p class="hint">Плановых событий в этой валюте на период нет.</p>'}
+    </div>`;
+  }).join('');
+}
+
+$('#fc-months').addEventListener('change', renderForecast);
 
 // ---------- запуск ----------
 async function onSession(session) {
