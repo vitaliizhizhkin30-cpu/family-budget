@@ -1059,6 +1059,176 @@ $('#backup-csv').addEventListener('click', async (e) => {
   btn.disabled = false;
 });
 
+// ---------- фото чека ----------
+state.rc = null;
+
+// Сжимаем фото до разумного размера: быстрее загрузка и дешевле распознавание
+async function imageToJpegDataUrl(file, maxSide = 1600, quality = 0.82) {
+  let src;
+  try {
+    src = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch {
+    src = await new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error('Не удалось открыть фото'));
+      im.src = URL.createObjectURL(file);
+    });
+  }
+  const k = Math.min(1, maxSide / Math.max(src.width, src.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(src.width * k);
+  c.height = Math.round(src.height * k);
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  src.close?.();
+  return c.toDataURL('image/jpeg', quality);
+}
+
+$('#rc-loading').addEventListener('cancel', (e) => e.preventDefault());
+$('#scan-btn').addEventListener('click', () => {
+  if (!state.accounts.length) { toast('Сначала добавь счёт'); return; }
+  $('#scan-input').click();
+});
+
+$('#scan-input').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  const loading = $('#rc-loading');
+  loading.showModal();
+  try {
+    const image = await imageToJpegDataUrl(file);
+    const session = (await sb.auth.getSession()).data.session;
+    if (!session) throw new Error('Нужно войти заново.');
+    const categories = state.categories.filter((c) => c.kind === 'expense').map((c) => ({ id: c.id, name: c.name }));
+    const res = await fetch(`${window.APP_CONFIG.SUPABASE_URL}/functions/v1/parse-receipt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}`, apikey: window.APP_CONFIG.SUPABASE_KEY },
+      body: JSON.stringify({ image, categories, today: todayLocal() }),
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* не JSON */ }
+    if (res.status === 404) throw new Error('функция распознавания ещё не установлена в Supabase.');
+    if (!res.ok) throw new Error(data?.error || `ошибка ${res.status}`);
+    loading.close();
+    openReceiptDialog(data);
+  } catch (err) {
+    loading.close();
+    console.error(err);
+    toast('Чек: ' + (err.message || err));
+  }
+});
+
+function openReceiptDialog(data) {
+  // группируем позиции по категориям
+  const map = new Map();
+  for (const it of data.items) {
+    const key = it.category_id ?? '';
+    const g = map.get(key) ?? { category_id: it.category_id, amount: 0, names: [] };
+    g.amount = round2(g.amount + it.amount);
+    if (it.name) g.names.push(it.name);
+    map.set(key, g);
+  }
+  if (!map.size) { toast('В чеке не нашлось позиций. Сфотографируй ровнее и ближе, чтобы текст читался.'); return; }
+  state.rc = { total: data.total, currency: data.currency, groups: [...map.values()] };
+
+  const f = $('#rc-form');
+  f.reset();
+  f.account.innerHTML = state.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)} · ${esc(a.currency)} (${esc(memberName(a.owner_id))})</option>`).join('');
+  let pick = state.accounts.find((a) => a.currency === data.currency)?.id;
+  if (!pick) {
+    try { pick = localStorage.getItem('lastAccount'); } catch { /* ignore */ }
+  }
+  if (pick && state.accounts.some((a) => a.id === pick)) f.account.value = pick;
+  f.date.value = data.date ?? todayLocal();
+  f.store.value = data.store ?? '';
+  $('#rc-error').textContent = '';
+  renderRcGroups();
+  $('#rc-dialog').showModal();
+}
+
+function renderRcGroups() {
+  const cats = state.categories.filter((c) => c.kind === 'expense');
+  const options = (sel) => '<option value="">— без категории —</option>'
+    + cats.map((c) => `<option value="${esc(c.id)}"${c.id === sel ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  $('#rc-groups').innerHTML = state.rc.groups.map((g, i) => {
+    const names = g.names.slice(0, 4).join(', ') + (g.names.length > 4 ? ` и ещё ${g.names.length - 4}` : '');
+    return `
+    <div class="rc-group">
+      <select data-rc-cat="${i}" aria-label="Категория">${options(g.category_id)}</select>
+      <input data-rc-amt="${i}" inputmode="decimal" value="${esc(String(g.amount).replace('.', ','))}" aria-label="Сумма">
+      <button type="button" class="del" data-rc-del="${i}" title="Убрать" aria-label="Убрать группу">✕</button>
+      <div class="names">${esc(names)}</div>
+    </div>`;
+  }).join('');
+  updateRcCheck();
+}
+
+function updateRcCheck() {
+  const el = $('#rc-check');
+  const { groups, total, currency } = state.rc;
+  const sum = round2(groups.reduce((s, g) => s + (Number.isFinite(g.amount) ? g.amount : 0), 0));
+  const parts = [];
+  if (total != null) {
+    const ok = Math.abs(sum - total) < 0.015;
+    parts.push(ok
+      ? `<span class="rc-check-ok">✓ Сумма сходится с итогом чека (${esc(String(total))}).</span>`
+      : `<span class="rc-check-warn">⚠ По категориям ${esc(String(sum))}, а в чеке итого ${esc(String(total))}. Проверь суммы.</span>`);
+  } else {
+    parts.push(`Итого по категориям: ${esc(String(sum))}.`);
+  }
+  const acc = state.accounts.find((a) => a.id === $('#rc-form').account.value);
+  if (acc && currency && acc.currency !== currency) {
+    parts.push(`<span class="rc-check-warn">Валюта чека ${esc(currency)}, а счёт в ${esc(acc.currency)}: суммы сохранятся как есть, проверь выбор счёта.</span>`);
+  }
+  el.innerHTML = parts.join('<br>');
+}
+
+$('#rc-groups').addEventListener('change', (e) => {
+  const i = e.target.dataset?.rcCat;
+  if (i !== undefined) state.rc.groups[i].category_id = e.target.value || null;
+});
+$('#rc-groups').addEventListener('input', (e) => {
+  const i = e.target.dataset?.rcAmt;
+  if (i === undefined) return;
+  state.rc.groups[i].amount = parseAmount(e.target.value);
+  updateRcCheck();
+});
+$('#rc-groups').addEventListener('click', (e) => {
+  const i = e.target.closest?.('[data-rc-del]')?.dataset.rcDel;
+  if (i === undefined) return;
+  state.rc.groups.splice(Number(i), 1);
+  renderRcGroups();
+});
+$('#rc-form').account.addEventListener('change', updateRcCheck);
+
+$('#rc-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  if (!state.rc.groups.length) { $('#rc-error').textContent = 'Нет ни одной суммы для сохранения.'; return; }
+  // одинаковые категории объединяем в одну операцию
+  const merged = new Map();
+  for (const g of state.rc.groups) {
+    if (!(g.amount > 0)) { $('#rc-error').textContent = 'Все суммы должны быть больше нуля. Скидку лучше убрать или вычесть из суммы нужной категории.'; return; }
+    const key = g.category_id ?? '';
+    merged.set(key, round2((merged.get(key) ?? 0) + g.amount));
+  }
+  const note = f.store.value.trim() || 'Чек';
+  const rows = [...merged].map(([cat, amount]) => ({
+    household_id: state.householdId, kind: 'expense', account_id: f.account.value, amount,
+    category_id: cat || null, tx_date: f.date.value, note,
+  }));
+  const btn = f.querySelector('button[type=submit]');
+  btn.disabled = true;
+  const { error } = await sb.from('transactions').insert(rows);
+  btn.disabled = false;
+  if (error) { $('#rc-error').textContent = 'Не удалось сохранить: ' + error.message; return; }
+  try { localStorage.setItem('lastAccount', f.account.value); } catch { /* ignore */ }
+  $('#rc-dialog').close();
+  toast(`Сохранено операций: ${rows.length}`);
+  refresh();
+});
+
 // ---------- запуск ----------
 async function onSession(session) {
   if (!session) { state.user = null; showLogin(); return; }

@@ -94,7 +94,9 @@
     </section>
   </main>
 
+  <button class="fab scan" id="scan-btn" aria-label="Сфотографировать чек">📷</button>
   <button class="fab" id="add-tx-btn" aria-label="Добавить операцию">+</button>
+  <input type="file" id="scan-input" accept="image/*" capture="environment" hidden>
 </div>
 
 <!-- Диалог: операция -->
@@ -203,6 +205,26 @@
     <div class="row">
       <button type="button" class="btn" data-close>Отмена</button>
       <button type="submit" class="btn primary">Записать</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Диалог: распознавание чека -->
+<dialog id="rc-loading">
+  <div class="sheet"><p id="rc-loading-text">Распознаю чек…</p></div>
+</dialog>
+<dialog id="rc-dialog">
+  <form id="rc-form" method="dialog" class="sheet">
+    <h3>Чек</h3>
+    <label>Счёт <select name="account" required></select></label>
+    <label>Дата <input type="date" name="date" required></label>
+    <label>Магазин / комментарий <input name="store" autocomplete="off" placeholder="необязательно"></label>
+    <div id="rc-groups" class="rc-groups"></div>
+    <p class="hint" id="rc-check"></p>
+    <p class="error" id="rc-error" role="alert"></p>
+    <div class="row">
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn primary">Сохранить расходы</button>
     </div>
   </form>
 </dialog>
