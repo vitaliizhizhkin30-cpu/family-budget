@@ -10,6 +10,10 @@ const state = {
   accounts: [],     // с полем balance
   categories: [],
   txs: [],
+  rates: {},        // курсы ЦБ: сколько RUB за 1 единицу валюты
+  ratesDate: null,
+  ratesStale: false,
+  markup: 3,        // спред обмена, %
   planned: [],      // открытые пункты плана (planned / invoiced)
   plEditId: null,
   plKind: 'income',
@@ -112,7 +116,7 @@ async function loadData() {
     sb.from('account_balances').select('account_id, balance'),
     sb.from('accounts').select('id, name, type, bank, currency, owner_id, archived, created_at').eq('archived', false).order('created_at'),
     sb.from('categories').select('id, name, kind, is_fixed').eq('archived', false).order('name'),
-    sb.from('transactions').select('id, kind, account_id, amount, category_id, tx_date, note, created_by, created_at')
+    sb.from('transactions').select('id, kind, account_id, amount, category_id, to_account_id, to_amount, tx_date, note, created_by, created_at')
       .order('tx_date', { ascending: false }).order('created_at', { ascending: false }).limit(200),
     sb.from('planned_items').select('id, kind, title, amount, currency, category_id, due_date, status, recurrence, note')
       .in('status', ['planned', 'invoiced']).order('due_date'),
@@ -121,7 +125,7 @@ async function loadData() {
   const balMap = new Map(bal.data.map((b) => [b.account_id, Number(b.balance)]));
   state.accounts = acc.data.map((a) => ({ ...a, balance: balMap.get(a.id) ?? 0 }));
   state.categories = cat.data;
-  state.txs = tx.data.map((t) => ({ ...t, amount: Number(t.amount) }));
+  state.txs = tx.data.map((t) => ({ ...t, amount: Number(t.amount), to_amount: t.to_amount == null ? null : Number(t.to_amount) }));
   state.planned = pl.data.map((p) => ({ ...p, amount: Number(p.amount) }));
 }
 
@@ -177,6 +181,22 @@ function renderTxList(box, list) {
   const cat = new Map(state.categories.map((c) => [c.id, c]));
   box.innerHTML = list.map((t) => {
     const a = acc.get(t.account_id);
+    if (t.kind === 'transfer') {
+      const b = acc.get(t.to_account_id);
+      const sub = [fmtDate(t.tx_date), memberName(t.created_by), t.note].filter(Boolean).map(esc).join(' · ');
+      const amt = a?.currency === b?.currency
+        ? money(t.amount, a?.currency ?? 'RUB')
+        : `${money(t.amount, a?.currency ?? 'RUB')} → ${money(t.to_amount, b?.currency ?? 'RUB')}`;
+      return `
+    <div class="item">
+      <div class="main">
+        <div class="title">Перевод: ${esc(a?.name ?? '?')} → ${esc(b?.name ?? '?')}</div>
+        <div class="sub">${sub}</div>
+      </div>
+      <div class="amount transfer">${esc(amt)}</div>
+      <button class="del" data-del="${esc(t.id)}" title="Удалить" aria-label="Удалить операцию">✕</button>
+    </div>`;
+    }
     const sign = t.kind === 'income' ? '+' : '−';
     const title = cat.get(t.category_id)?.name ?? (t.kind === 'income' ? 'Доход' : 'Расход');
     const sub = [fmtDate(t.tx_date), a?.name, memberName(t.created_by), t.note].filter(Boolean).map(esc).join(' · ');
@@ -220,13 +240,49 @@ function fillCategories() {
   sel.innerHTML = '<option value="">— без категории —</option>' + opts.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
 }
 
+const accById = (id) => state.accounts.find((a) => a.id === id);
+
+// Подсказка о курсе при переводе между счетами в разных валютах
+function updateRateHint() {
+  const f = $('#tx-form');
+  const hint = $('#tx-rate-hint');
+  hint.hidden = true;
+  if (state.txKind !== 'transfer') return;
+  const a = accById(f.account.value), b = accById(f.to_account.value);
+  const out = parseAmount(f.amount.value), inn = parseAmount(f.to_amount.value);
+  if (!a || !b || a.currency === b.currency || !(out > 0) || !(inn > 0)) return;
+  hint.textContent = `Курс обмена: 1 ${a.currency} = ${(inn / out).toLocaleString('ru-RU', { maximumFractionDigits: 4 })} ${b.currency}`;
+  hint.hidden = false;
+}
+
+function applyKindUI() {
+  const t = state.txKind === 'transfer';
+  document.querySelectorAll('#tx-kind button').forEach((b) => b.classList.toggle('active', b.dataset.kind === state.txKind));
+  $('#tx-to-wrap').hidden = !t;
+  $('#tx-cat-wrap').hidden = t;
+  $('#tx-acc-lbl').textContent = t ? 'Со счёта' : 'Счёт';
+  $('#tx-amount-lbl').textContent = t ? 'Сумма списания (в валюте счёта-отправителя)' : 'Сумма';
+  syncToAmountVisibility();
+  if (!t) fillCategories();
+  updateRateHint();
+}
+
+// Поле «сумма зачисления» нужно только если валюты счетов разные
+function syncToAmountVisibility() {
+  const f = $('#tx-form');
+  const a = accById(f.account.value), b = accById(f.to_account.value);
+  const cross = state.txKind === 'transfer' && a && b && a.currency !== b.currency;
+  $('#tx-toamt-wrap').hidden = !cross;
+}
+
 $('#tx-kind').addEventListener('click', (e) => {
   const kind = e.target.dataset?.kind;
   if (!kind) return;
   state.txKind = kind;
-  document.querySelectorAll('#tx-kind button').forEach((b) => b.classList.toggle('active', b.dataset.kind === kind));
-  fillCategories();
+  applyKindUI();
 });
+['account', 'to_account'].forEach((n) => $('#tx-form [name=' + n + ']').addEventListener('change', () => { syncToAmountVisibility(); updateRateHint(); }));
+['amount', 'to_amount'].forEach((n) => $('#tx-form [name=' + n + ']').addEventListener('input', updateRateHint));
 
 $('#add-tx-btn').addEventListener('click', () => {
   if (!state.accounts.length) { toast('Сначала добавь счёт'); return; }
@@ -238,7 +294,9 @@ $('#add-tx-btn').addEventListener('click', () => {
   let last = null;
   try { last = localStorage.getItem('lastAccount'); } catch { /* ignore */ }
   if (last && state.accounts.some((a) => a.id === last)) f.account.value = last;
-  fillCategories();
+  f.to_account.innerHTML = f.account.innerHTML;
+  f.to_account.value = (state.accounts.find((a) => a.id !== f.account.value) ?? state.accounts[0]).id;
+  applyKindUI();
   $('#tx-error').textContent = '';
   $('#tx-dialog').showModal();
   f.amount.focus();
@@ -249,9 +307,7 @@ $('#tx-form').addEventListener('submit', async (e) => {
   const f = e.target;
   const amount = parseAmount(f.amount.value);
   if (!(amount > 0)) { $('#tx-error').textContent = 'Введи сумму больше нуля.'; return; }
-  const btn = f.querySelector('button[type=submit]');
-  btn.disabled = true;
-  const { error } = await sb.from('transactions').insert({
+  const row = {
     household_id: state.householdId,
     kind: state.txKind,
     account_id: f.account.value,
@@ -259,7 +315,22 @@ $('#tx-form').addEventListener('submit', async (e) => {
     category_id: f.category.value || null,
     tx_date: f.date.value,
     note: f.note.value.trim() || null,
-  });
+  };
+  if (state.txKind === 'transfer') {
+    const a = accById(f.account.value), b = accById(f.to_account.value);
+    if (!b || a.id === b.id) { $('#tx-error').textContent = 'Выбери два разных счёта.'; return; }
+    let toAmount = amount;
+    if (a.currency !== b.currency) {
+      toAmount = parseAmount(f.to_amount.value);
+      if (!(toAmount > 0)) { $('#tx-error').textContent = `Введи, сколько в итоге пришло на счёт (${b.currency}).`; return; }
+    }
+    row.category_id = null;
+    row.to_account_id = b.id;
+    row.to_amount = toAmount;
+  }
+  const btn = f.querySelector('button[type=submit]');
+  btn.disabled = true;
+  const { error } = await sb.from('transactions').insert(row);
   btn.disabled = false;
   if (error) { $('#tx-error').textContent = 'Не удалось сохранить: ' + error.message; return; }
   try { localStorage.setItem('lastAccount', f.account.value); } catch { /* ignore */ }
@@ -532,6 +603,40 @@ document.addEventListener('click', (e) => {
   if (planId) { const it = state.planned.find((p) => p.id === planId); if (it) openPlanDialog(it); }
 });
 
+// ---------- курсы ЦБ ----------
+const BASE = 'RUB';
+const RATES_URL = 'https://www.cbr-xml-daily.ru/daily_json.js';
+const round2 = (n) => Math.round(n * 100) / 100;
+const rateOf = (cur) => (cur === BASE ? 1 : state.rates[cur] ?? null);
+
+function loadCachedRates() {
+  try {
+    const c = JSON.parse(localStorage.getItem('cbrRates'));
+    if (c?.rates) { state.rates = c.rates; state.ratesDate = c.date; }
+  } catch { /* нет кэша */ }
+}
+
+async function fetchRates() {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+    const r = await fetch(RATES_URL, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const rates = {};
+    for (const v of Object.values(d.Valute)) rates[v.CharCode] = v.Value / v.Nominal;
+    state.rates = rates;
+    state.ratesDate = String(d.Date).slice(0, 10);
+    state.ratesStale = false;
+    try { localStorage.setItem('cbrRates', JSON.stringify({ rates, date: state.ratesDate })); } catch { /* ignore */ }
+  } catch (err) {
+    console.warn('Курсы ЦБ не загружены:', err);
+    state.ratesStale = true;
+  }
+  renderForecast();
+}
+
 // ---------- прогноз ----------
 function daysBetween(a, b) {
   const [y1, m1, d1] = a.split('-').map(Number);
@@ -555,24 +660,49 @@ function planEvents(cur, today, end) {
       if (d >= today) out.push({ date: d, delta, title: p.title });
     }
   }
-  return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : b.delta - a.delta));
+  return out;
 }
 
-function buildForecast(cur, today, end) {
-  const start = state.accounts.filter((a) => a.currency === cur).reduce((s, a) => s + a.balance, 0);
-  const events = planEvents(cur, today, end);
+const sortEvents = (arr) => arr.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : b.delta - a.delta));
+
+function runSeries(start, events, today) {
+  sortEvents(events);
   let bal = start;
   const series = [{ date: today, bal }];
   let min = { bal, date: today };
   let firstNeg = bal < 0 ? today : null;
   for (const ev of events) {
-    bal = Math.round((bal + ev.delta) * 100) / 100;
+    bal = round2(bal + ev.delta);
     ev.bal = bal;
     series.push({ date: ev.date, bal });
     if (bal < min.bal) min = { bal, date: ev.date };
     if (bal < 0 && !firstNeg) firstNeg = ev.date;
   }
   return { start, end: bal, events, series, min, firstNeg };
+}
+
+const balanceIn = (cur) => state.accounts.filter((a) => a.currency === cur).reduce((s, a) => s + a.balance, 0);
+
+function buildForecast(cur, today, end) {
+  return runSeries(round2(balanceIn(cur)), planEvents(cur, today, end), today);
+}
+
+// Общий прогноз в базовой валюте по текущим курсам ЦБ
+function buildTotal(currencies, today, end) {
+  let start = 0;
+  const events = [];
+  const skipped = [];
+  for (const cur of currencies) {
+    const r = rateOf(cur);
+    if (r == null) { skipped.push(cur); continue; }
+    start += balanceIn(cur) * r;
+    for (const ev of planEvents(cur, today, end)) {
+      events.push({ date: ev.date, delta: round2(ev.delta * r), title: ev.title, orig: cur === BASE ? null : { delta: ev.delta, cur } });
+    }
+  }
+  const fc = runSeries(round2(start), events, today);
+  fc.skipped = skipped;
+  return fc;
 }
 
 function forecastSvg(fc, today, end, idx) {
@@ -598,47 +728,98 @@ function forecastSvg(fc, today, end, idx) {
   </svg>`;
 }
 
-function renderForecast() {
-  const months = Number($('#fc-months').value) || 3;
-  const today = todayLocal();
-  const end = addMonths(today, months);
-  const currencies = [...new Set([...state.accounts.map((a) => a.currency), ...state.planned.map((p) => p.currency)])].sort();
-  const box = $('#forecast');
-  if (!currencies.length) { box.innerHTML = '<div class="empty">Добавь счета и плановые пункты, чтобы увидеть прогноз.</div>'; return; }
-
-  box.innerHTML = currencies.map((cur, i) => {
-    const fc = buildForecast(cur, today, end);
-    const hasAccount = state.accounts.some((a) => a.currency === cur);
-    const verdict = fc.firstNeg
-      ? `<div class="fc-verdict bad">⚠ Остаток уходит в минус ${fc.firstNeg === today ? 'уже сейчас' : 'с ' + fmtDate(fc.firstNeg)}</div>`
-      : '<div class="fc-verdict ok">✓ В минус не уходит</div>';
-    const note = hasAccount ? '' : `<p class="hint">Счетов в ${esc(cur)} нет, прогноз считается от нуля.</p>`;
-    const rows = fc.events.map((ev) => `
+function forecastCard({ title, fc, cur, idx, months, today, end, note = '' }) {
+  const verdict = fc.firstNeg
+    ? `<div class="fc-verdict bad">⚠ Остаток уходит в минус ${fc.firstNeg === today ? 'уже сейчас' : 'с ' + fmtDate(fc.firstNeg)}</div>`
+    : '<div class="fc-verdict ok">✓ В минус не уходит</div>';
+  const rows = fc.events.map((ev) => `
       <div class="fc-ev">
         <span class="d">${fmtDate(ev.date)}</span>
-        <span>${esc(ev.title)}</span>
+        <span>${esc(ev.title)}${ev.orig ? ` <span class="orig">(${ev.orig.delta > 0 ? '+' : '−'}${esc(money(Math.abs(ev.orig.delta), ev.orig.cur))})</span>` : ''}</span>
         <span class="amount ${ev.delta > 0 ? 'income' : 'expense'}">${ev.delta > 0 ? '+' : '−'}${esc(money(Math.abs(ev.delta), cur))}</span>
         <span class="bal ${ev.bal < 0 ? 'neg' : ''}">${esc(money(ev.bal, cur))}</span>
       </div>`).join('');
-    return `
+  return `
     <div class="fc-card">
-      <h3>${esc(cur)}</h3>
+      <h3>${esc(title)}</h3>
       ${verdict}${note}
       <div class="fc-stats">
         <div class="fc-stat"><div class="lbl">Сейчас</div><div class="val">${esc(money(fc.start, cur))}</div></div>
         <div class="fc-stat"><div class="lbl">Через ${months} мес.</div><div class="val">${esc(money(fc.end, cur))}</div></div>
         <div class="fc-stat"><div class="lbl">Минимум${fc.events.length ? ' (' + fmtDate(fc.min.date) + ')' : ''}</div><div class="val">${esc(money(fc.min.bal, cur))}</div></div>
       </div>
-      ${forecastSvg(fc, today, end, i)}
+      ${forecastSvg(fc, today, end, idx)}
       <div class="fc-axis"><span>${fmtDate(today)}</span><span>${fmtDate(end)}</span></div>
       ${fc.events.length
         ? `<details><summary>События и остаток после каждого (${fc.events.length})</summary><div class="fc-events">${rows}</div></details>`
-        : '<p class="hint">Плановых событий в этой валюте на период нет.</p>'}
+        : '<p class="hint">Плановых событий на период нет.</p>'}
     </div>`;
+}
+
+// Сколько нужно обменять на валюту, в которой по прогнозу не хватает денег
+function exchangeCards(currencies, today, months) {
+  const out = [];
+  for (const cur of currencies) {
+    const r = rateOf(cur);
+    if (cur === BASE || r == null) continue;
+    const fc = buildForecast(cur, today, addMonths(today, months));
+    if (!(fc.min.bal < 0)) continue;
+    const deficit = round2(-fc.min.bal);
+    const byCbr = deficit * r;
+    const withSpread = byCbr * (1 + state.markup / 100);
+    out.push(`
+    <div class="fc-card exchange">
+      <h3>Нужно обменять в ${esc(cur)}</h3>
+      <p>${fc.firstNeg === today ? 'Уже сейчас' : 'С ' + fmtDate(fc.firstNeg)} в ${esc(cur)} не хватает денег; максимальный дефицит на периоде — <strong>${esc(money(deficit, cur))}</strong>.</p>
+      <p>Это около <strong>${esc(money(byCbr, BASE))}</strong> по курсу ЦБ (1 ${esc(cur)} = ${esc(money(r, BASE))}), с запасом на спред ${esc(String(state.markup))}% — около <strong>${esc(money(withSpread, BASE))}</strong>.</p>
+      <p class="hint">Расчёт примерный: курс будущих дат неизвестен, а банк обменивает по своему курсу. Обменять можно частями — перед каждой нехваткой.</p>
+    </div>`);
+  }
+  return out.join('');
+}
+
+function renderForecast() {
+  const months = Number($('#fc-months').value) || 3;
+  const today = todayLocal();
+  const end = addMonths(today, months);
+  const currencies = [...new Set([...state.accounts.map((a) => a.currency), ...state.planned.map((p) => p.currency)])].sort();
+  const box = $('#forecast');
+
+  // строка о курсах
+  const info = $('#rates-info');
+  if (currencies.every((c) => c === BASE)) info.textContent = '';
+  else if (!state.ratesDate) info.textContent = state.ratesStale ? 'Курсы ЦБ не загрузились — общий прогноз недоступен.' : 'Загружаю курсы ЦБ…';
+  else info.textContent = state.ratesStale
+    ? `Не удалось обновить курсы, используются сохранённые на ${fmtDate(state.ratesDate)}.`
+    : `Курсы ЦБ на ${fmtDate(state.ratesDate)}.`;
+
+  if (!currencies.length) { box.innerHTML = '<div class="empty">Добавь счета и плановые пункты, чтобы увидеть прогноз.</div>'; return; }
+
+  let html = '';
+  const multi = currencies.some((c) => c !== BASE);
+  if (multi) {
+    const total = buildTotal(currencies, today, end);
+    const note = total.skipped.length ? `<p class="hint">Не учтены (нет курса ЦБ): ${esc(total.skipped.join(', '))}.</p>` : '';
+    html += forecastCard({ title: `Всего, в ${BASE} (по курсу ЦБ)`, fc: total, cur: BASE, idx: 'T', months, today, end, note });
+    html += exchangeCards(currencies, today, months);
+  }
+  html += currencies.map((cur, i) => {
+    const hasAccount = state.accounts.some((a) => a.currency === cur);
+    const note = hasAccount ? '' : `<p class="hint">Счетов в ${esc(cur)} нет, прогноз считается от нуля.</p>`;
+    return forecastCard({ title: multi ? `Только ${cur}` : cur, fc: buildForecast(cur, today, end), cur, idx: i, months, today, end, note });
   }).join('');
+  box.innerHTML = html;
 }
 
 $('#fc-months').addEventListener('change', renderForecast);
+
+$('#fc-markup').addEventListener('change', (e) => {
+  const v = Number(String(e.target.value).replace(',', '.'));
+  state.markup = Number.isFinite(v) && v >= 0 && v <= 30 ? v : 3;
+  e.target.value = state.markup;
+  try { localStorage.setItem('markup', String(state.markup)); } catch { /* ignore */ }
+  renderForecast();
+});
 
 // ---------- запуск ----------
 async function onSession(session) {
@@ -656,6 +837,13 @@ async function onSession(session) {
 }
 
 initTheme();
+try {
+  const m = Number(localStorage.getItem('markup'));
+  if (localStorage.getItem('markup') !== null && Number.isFinite(m) && m >= 0 && m <= 30) state.markup = m;
+} catch { /* ignore */ }
+$('#fc-markup').value = state.markup;
+loadCachedRates();
+fetchRates();
 sb.auth.onAuthStateChange((_event, session) => { setTimeout(() => onSession(session), 0); });
 sb.auth.getSession().then(({ data }) => { if (!data.session) showLogin(); });
 

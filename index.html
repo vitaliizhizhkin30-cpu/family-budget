@@ -74,6 +74,10 @@
         </select>
       </div>
       <p class="hint">Прогноз считается по текущим остаткам и тому, что есть во вкладке «План». Регулярные расходы (аренда, связь, подписки, средние траты на еду) нужно добавить в план с повтором, иначе прогноз получится слишком оптимистичным.</p>
+      <div class="fc-controls">
+        <label>Спред обмена, % <input id="fc-markup" type="number" min="0" max="30" step="0.5" value="3" class="compact"></label>
+        <span id="rates-info" class="hint"></span>
+      </div>
       <div id="forecast" class="fc-list"></div>
     </section>
 
@@ -94,10 +98,14 @@
     <div class="seg" id="tx-kind">
       <button type="button" data-kind="expense" class="active">Расход</button>
       <button type="button" data-kind="income">Доход</button>
+      <button type="button" data-kind="transfer">Перевод</button>
     </div>
-    <label>Сумма <input name="amount" inputmode="decimal" autocomplete="off" placeholder="0" required></label>
-    <label>Счёт <select name="account" required></select></label>
-    <label>Категория <select name="category"></select></label>
+    <label><span id="tx-amount-lbl">Сумма</span> <input name="amount" inputmode="decimal" autocomplete="off" placeholder="0" required></label>
+    <label><span id="tx-acc-lbl">Счёт</span> <select name="account" required></select></label>
+    <label id="tx-to-wrap" hidden><span>На счёт</span> <select name="to_account"></select></label>
+    <label id="tx-toamt-wrap" hidden><span>Сумма зачисления (в валюте счёта-получателя)</span> <input name="to_amount" inputmode="decimal" autocomplete="off" placeholder="0"></label>
+    <p class="hint" id="tx-rate-hint" hidden></p>
+    <label id="tx-cat-wrap">Категория <select name="category"></select></label>
     <label>Дата <input type="date" name="date" required></label>
     <label>Комментарий <input name="note" autocomplete="off" placeholder="необязательно"></label>
     <p class="error" id="tx-error" role="alert"></p>
