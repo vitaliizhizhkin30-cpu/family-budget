@@ -150,13 +150,62 @@ function render() {
   $('#more-ops').hidden = state.txs.length <= state.txLimit;
 }
 
+// Сводка по счетам: Map валюта -> сумма
+function sumByCurrency(accs) {
+  const m = new Map();
+  for (const a of accs) m.set(a.currency, round2((m.get(a.currency) ?? 0) + a.balance));
+  return m;
+}
+
+// Карточка с остатком: общий итог в RUB по курсу ЦБ (если есть другие валюты) и разбивка по валютам
+function balanceCard(title, accs, extraClass = '') {
+  const m = sumByCurrency(accs);
+  if (!m.size) {
+    return `<div class="total ${extraClass}"><div class="cur">${esc(title)}</div><div class="sub2 muted">Счетов пока нет</div></div>`;
+  }
+  const entries = [...m];
+  const foreign = entries.some(([c]) => c !== BASE);
+  let main, label, note = '';
+  if (foreign) {
+    const known = entries.filter(([c]) => rateOf(c) != null);
+    const missing = entries.filter(([c]) => rateOf(c) == null).map(([c]) => c);
+    const sum = known.reduce((s, [c, v]) => s + v * rateOf(c), 0);
+    main = known.length ? '≈ ' + money(sum, BASE) : '—';
+    label = `${title}, в ${BASE} по курсу ЦБ`;
+    if (missing.length) note = `<div class="sub2 muted">${state.ratesDate ? 'Нет курса ЦБ: ' + esc(missing.join(', ')) : 'Курсы загружаются…'}</div>`;
+  } else {
+    main = money(entries[0][1], BASE);
+    label = title;
+  }
+  const lines = (foreign || entries.length > 1)
+    ? entries.map(([c, v]) => `<div class="sub2">${esc(money(v, c))}</div>`).join('')
+    : '';
+  return `<div class="total ${extraClass}"><div class="cur">${esc(label)}</div><div class="sum">${esc(main)}</div>${lines}${note}</div>`;
+}
+
+// Участники: сначала текущий пользователь
+function orderedMembers() {
+  return [...state.members].sort((a, b) => (b.user_id === state.user?.id) - (a.user_id === state.user?.id));
+}
+
 function renderTotals() {
-  const sums = new Map();
-  for (const a of state.accounts) sums.set(a.currency, (sums.get(a.currency) ?? 0) + a.balance);
   const box = $('#totals');
-  if (!sums.size) { box.innerHTML = ''; return; }
-  box.innerHTML = [...sums].map(([cur, sum]) =>
-    `<div class="total"><div class="cur">Всего, ${esc(cur)}</div><div class="sum">${esc(money(sum, cur))}</div></div>`).join('');
+  if (!state.accounts.length) { box.innerHTML = ''; return; }
+  const family = balanceCard('Семья — общий бюджет', state.accounts, 'family');
+  const persons = orderedMembers().map((m) => balanceCard(m.display_name, state.accounts.filter((a) => a.owner_id === m.user_id))).join('');
+  box.innerHTML = family + persons;
+}
+
+function accountRow(a) {
+  const sub = [a.type === 'cash' ? 'наличные' : a.type === 'card' ? 'карта' : '', a.currency, a.bank].filter(Boolean).map(esc).join(' · ');
+  return `
+    <div class="item">
+      <div class="main">
+        <div class="title">${esc(a.name)}</div>
+        <div class="sub">${sub}</div>
+      </div>
+      <div class="amount">${esc(money(a.balance, a.currency))}</div>
+    </div>`;
 }
 
 function renderAccounts() {
@@ -165,14 +214,12 @@ function renderAccounts() {
     box.innerHTML = '<div class="empty">Счетов пока нет. Добавь первый кнопкой «+ Счёт».</div>';
     return;
   }
-  box.innerHTML = state.accounts.map((a) => `
-    <div class="item">
-      <div class="main">
-        <div class="title">${esc(a.name)}</div>
-        <div class="sub">${esc(memberName(a.owner_id))} · ${esc(a.currency)}${a.bank ? ' · ' + esc(a.bank) : ''}</div>
-      </div>
-      <div class="amount">${esc(money(a.balance, a.currency))}</div>
-    </div>`).join('');
+  const known = new Set(state.members.map((m) => m.user_id));
+  const groups = orderedMembers().map((m) => ({ name: m.display_name, accs: state.accounts.filter((a) => a.owner_id === m.user_id) }));
+  const rest = state.accounts.filter((a) => !known.has(a.owner_id));
+  if (rest.length) groups.push({ name: 'Без владельца', accs: rest });
+  box.innerHTML = groups.filter((g) => g.accs.length)
+    .map((g) => `<div class="group-label">${esc(g.name)}</div>` + g.accs.map(accountRow).join('')).join('');
 }
 
 function renderTxList(box, list) {
@@ -634,6 +681,7 @@ async function fetchRates() {
     console.warn('Курсы ЦБ не загружены:', err);
     state.ratesStale = true;
   }
+  renderTotals();
   renderForecast();
 }
 

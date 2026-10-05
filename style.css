@@ -142,6 +142,9 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 .total .sub2.expense { color: var(--expense); }
 .topbar { padding-inline: max(16px, calc((100vw - 720px) / 2 + 16px)); }
 
+.total.family { flex: 1 1 100%; border-color: var(--accent); }
+.total.family .sum { font-size: 28px; }
+.total .sub2.muted, .sub2.muted { color: var(--muted); font-size: 13px; }
 .seg:has(button:nth-child(3)) { grid-template-columns: 1fr 1fr 1fr; }
 .seg button.active[data-kind="transfer"] { color: var(--accent); }
 .amount.transfer { color: var(--text); }
