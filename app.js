@@ -7,7 +7,8 @@ const state = {
   user: null,
   householdId: null,
   members: [],      // {user_id, display_name}
-  accounts: [],     // с полем balance
+  accounts: [],     // активные счета, с полем balance
+  allAccounts: [],  // вместе с архивными (для отображения старых операций)
   categories: [],
   txs: [],
   rates: {},        // курсы ЦБ: сколько RUB за 1 единицу валюты
@@ -114,7 +115,7 @@ async function loadContext() {
 async function loadData() {
   const [bal, acc, cat, tx, pl] = await Promise.all([
     sb.from('account_balances').select('account_id, balance'),
-    sb.from('accounts').select('id, name, type, bank, currency, owner_id, archived, created_at').eq('archived', false).order('created_at'),
+    sb.from('accounts').select('id, name, type, bank, currency, owner_id, archived, created_at').order('created_at'),
     sb.from('categories').select('id, name, kind, is_fixed').eq('archived', false).order('name'),
     sb.from('transactions').select('id, kind, account_id, amount, category_id, to_account_id, to_amount, tx_date, note, created_by, created_at')
       .order('tx_date', { ascending: false }).order('created_at', { ascending: false }).limit(200),
@@ -123,7 +124,8 @@ async function loadData() {
   ]);
   for (const r of [bal, acc, cat, tx, pl]) if (r.error) throw r.error;
   const balMap = new Map(bal.data.map((b) => [b.account_id, Number(b.balance)]));
-  state.accounts = acc.data.map((a) => ({ ...a, balance: balMap.get(a.id) ?? 0 }));
+  state.allAccounts = acc.data.map((a) => ({ ...a, balance: balMap.get(a.id) ?? 0 }));
+  state.accounts = state.allAccounts.filter((a) => !a.archived);   // активные: для итогов, ввода, прогноза
   state.categories = cat.data;
   state.txs = tx.data.map((t) => ({ ...t, amount: Number(t.amount), to_amount: t.to_amount == null ? null : Number(t.to_amount) }));
   state.planned = pl.data.map((p) => ({ ...p, amount: Number(p.amount) }));
@@ -144,6 +146,8 @@ function render() {
   renderTotals();
   renderAccounts();
   renderPlan();
+  renderArchived();
+  updateBackupHint();
   renderForecast();
   renderTxList($('#recent'), state.txs.slice(0, 5));
   renderTxList($('#ops'), state.txs.slice(0, state.txLimit));
@@ -199,7 +203,7 @@ function renderTotals() {
 function accountRow(a) {
   const sub = [a.type === 'cash' ? 'наличные' : a.type === 'card' ? 'карта' : '', a.currency, a.bank].filter(Boolean).map(esc).join(' · ');
   return `
-    <div class="item">
+    <div class="item clickable" data-acc="${esc(a.id)}">
       <div class="main">
         <div class="title">${esc(a.name)}</div>
         <div class="sub">${sub}</div>
@@ -224,7 +228,7 @@ function renderAccounts() {
 
 function renderTxList(box, list) {
   if (!list.length) { box.innerHTML = '<div class="empty">Операций пока нет.</div>'; return; }
-  const acc = new Map(state.accounts.map((a) => [a.id, a]));
+  const acc = new Map(state.allAccounts.map((a) => [a.id, a]));
   const cat = new Map(state.categories.map((c) => [c.id, c]));
   box.innerHTML = list.map((t) => {
     const a = acc.get(t.account_id);
@@ -867,6 +871,192 @@ $('#fc-markup').addEventListener('change', (e) => {
   e.target.value = state.markup;
   try { localStorage.setItem('markup', String(state.markup)); } catch { /* ignore */ }
   renderForecast();
+});
+
+// ---------- правка и архив счетов ----------
+state.editAccId = null;
+
+function renderArchived() {
+  const arch = state.allAccounts.filter((a) => a.archived);
+  $('#archived-box').hidden = !arch.length;
+  $('#archived').innerHTML = arch.map((a) => `
+    <div class="item archived-item">
+      <div class="main">
+        <div class="title">${esc(a.name)}</div>
+        <div class="sub">${esc(memberName(a.owner_id))} · ${esc(a.currency)}</div>
+      </div>
+      <div class="amount">${esc(money(a.balance, a.currency))}</div>
+      <button class="done-btn" data-restore="${esc(a.id)}">Вернуть</button>
+    </div>`).join('');
+}
+
+function openAccEdit(a) {
+  state.editAccId = a.id;
+  const f = $('#accedit-form');
+  f.reset();
+  f.name.value = a.name;
+  f.type.value = a.type;
+  f.bank.value = a.bank ?? '';
+  $('#accedit-cur').textContent = `Валюта: ${a.currency} (менять нельзя). Остаток в приложении: ${money(a.balance, a.currency)}.`;
+  $('#accedit-error').textContent = '';
+  $('#accedit-dialog').showModal();
+}
+
+$('#accedit-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const a = state.allAccounts.find((x) => x.id === state.editAccId);
+  if (!a) return;
+  const btn = f.querySelector('button[type=submit]');
+  btn.disabled = true;
+  const err = (msg) => { btn.disabled = false; $('#accedit-error').textContent = msg; };
+
+  const upd = await sb.from('accounts').update({
+    name: f.name.value.trim(), type: f.type.value, bank: f.bank.value.trim() || null,
+  }).eq('id', a.id);
+  if (upd.error) return err('Не удалось сохранить: ' + upd.error.message);
+
+  const raw = f.actual.value.trim();
+  if (raw) {
+    const actual = parseAmount(raw);
+    if (Number.isNaN(actual)) return err('Фактическая сумма должна быть числом.');
+    const diff = round2(actual - a.balance);
+    if (diff !== 0) {
+      const ins = await sb.from('transactions').insert({
+        household_id: state.householdId,
+        kind: diff > 0 ? 'income' : 'expense',
+        account_id: a.id,
+        amount: Math.abs(diff),
+        tx_date: todayLocal(),
+        note: 'Корректировка остатка',
+      });
+      if (ins.error) return err('Название сохранено, но корректировка не записалась: ' + ins.error.message);
+    }
+  }
+  btn.disabled = false;
+  $('#accedit-dialog').close();
+  toast('Сохранено');
+  refresh();
+});
+
+$('#accedit-archive').addEventListener('click', async () => {
+  const a = state.allAccounts.find((x) => x.id === state.editAccId);
+  if (!a) return;
+  const warn = a.balance !== 0 ? ` На счёте ещё ${money(a.balance, a.currency)}, эти деньги пропадут из итогов и прогноза.` : '';
+  if (!confirm(`Убрать счёт «${a.name}» в архив?${warn} Операции сохранятся, счёт можно вернуть.`)) return;
+  const { error } = await sb.from('accounts').update({ archived: true }).eq('id', a.id);
+  if (error) { $('#accedit-error').textContent = 'Не удалось: ' + error.message; return; }
+  $('#accedit-dialog').close();
+  toast('Счёт в архиве');
+  refresh();
+});
+
+document.addEventListener('click', async (e) => {
+  const restoreId = e.target.closest?.('[data-restore]')?.dataset.restore;
+  if (restoreId) {
+    const { error } = await sb.from('accounts').update({ archived: false }).eq('id', restoreId);
+    if (error) return toast('Не удалось вернуть: ' + error.message);
+    toast('Счёт возвращён');
+    refresh();
+    return;
+  }
+  const accId = e.target.closest?.('[data-acc]')?.dataset.acc;
+  if (accId) { const a = state.allAccounts.find((x) => x.id === accId); if (a) openAccEdit(a); }
+});
+
+// ---------- резервная копия ----------
+const BACKUP_KEY = 'lastBackup';
+
+function lastBackupDate() {
+  try { return localStorage.getItem(BACKUP_KEY); } catch { return null; }
+}
+
+function updateBackupHint() {
+  const last = lastBackupDate();
+  const stale = !last || daysBetween(last, todayLocal()) > 14;
+  $('#backup-hint').hidden = !(stale && state.accounts.length);
+  $('#backup-last').textContent = last
+    ? `Последняя копия с этого устройства: ${fmtDate(last)}. Рекомендуется раз в 1–2 недели.`
+    : 'С этого устройства копия ещё не скачивалась. Рекомендуется раз в 1–2 недели.';
+}
+
+function download(filename, text, mime) {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// PostgREST отдаёт максимум 1000 строк за запрос — докачиваем страницами
+async function fetchAll(table, order) {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from(table).select('*').order(order).range(from, from + 999);
+    if (error) throw new Error(`${table}: ${error.message}`);
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
+  return out;
+}
+
+$('#data-btn').addEventListener('click', () => {
+  $('#data-error').textContent = '';
+  updateBackupHint();
+  $('#data-dialog').showModal();
+});
+
+$('#backup-json').addEventListener('click', async (e) => {
+  const btn = e.target;
+  btn.disabled = true;
+  $('#data-error').textContent = '';
+  try {
+    const [households, members, accounts, categories, transactions, planned_items] = await Promise.all([
+      fetchAll('households', 'created_at'), fetchAll('members', 'user_id'), fetchAll('accounts', 'created_at'),
+      fetchAll('categories', 'name'), fetchAll('transactions', 'created_at'), fetchAll('planned_items', 'created_at'),
+    ]);
+    const payload = { app: 'family-budget', version: 1, exported_at: new Date().toISOString(),
+      tables: { households, members, accounts, categories, transactions, planned_items } };
+    download(`family-budget-backup-${todayLocal()}.json`, JSON.stringify(payload, null, 2), 'application/json');
+    try { localStorage.setItem(BACKUP_KEY, todayLocal()); } catch { /* ignore */ }
+    updateBackupHint();
+    toast(`Копия скачана: ${transactions.length} операций, ${accounts.length} счетов`);
+  } catch (err) {
+    $('#data-error').textContent = 'Не удалось скачать: ' + (err.message || err);
+  }
+  btn.disabled = false;
+});
+
+const csvCell = (v) => {
+  const s = String(v ?? '');
+  return /[";\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+
+$('#backup-csv').addEventListener('click', async (e) => {
+  const btn = e.target;
+  btn.disabled = true;
+  $('#data-error').textContent = '';
+  try {
+    const txs = await fetchAll('transactions', 'tx_date');
+    const acc = new Map(state.allAccounts.map((a) => [a.id, a]));
+    const cat = new Map(state.categories.map((c) => [c.id, c.name]));
+    const kinds = { income: 'Доход', expense: 'Расход', transfer: 'Перевод' };
+    const num = (n) => String(n).replace('.', ',');
+    const head = ['Дата', 'Тип', 'Счёт', 'Валюта', 'Сумма', 'Категория', 'На счёт', 'Сумма зачисления', 'Валюта зачисления', 'Кто внёс', 'Комментарий'];
+    const rows = txs.reverse().map((t) => {
+      const a = acc.get(t.account_id), b = acc.get(t.to_account_id);
+      return [t.tx_date, kinds[t.kind], a?.name, a?.currency, num(t.amount), cat.get(t.category_id), b?.name,
+        t.to_amount == null ? '' : num(t.to_amount), b?.currency, memberName(t.created_by), t.note].map(csvCell).join(';');
+    });
+    download(`family-budget-operations-${todayLocal()}.csv`, '﻿' + [head.join(';'), ...rows].join('\r\n'), 'text/csv;charset=utf-8');
+    toast(`Выгружено операций: ${txs.length}`);
+  } catch (err) {
+    $('#data-error').textContent = 'Не удалось выгрузить: ' + (err.message || err);
+  }
+  btn.disabled = false;
 });
 
 // ---------- запуск ----------

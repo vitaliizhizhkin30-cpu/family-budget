@@ -30,6 +30,7 @@
   <header class="topbar">
     <strong>Семейный бюджет</strong>
     <span class="grow"></span>
+    <button class="icon-btn" id="data-btn" title="Резервная копия и выгрузка" aria-label="Резервная копия и выгрузка">⚙</button>
     <button class="icon-btn" id="theme-btn" title="Сменить тему" aria-label="Сменить тему"></button>
     <button class="icon-btn" id="logout-btn" title="Выйти" aria-label="Выйти">⎋</button>
   </header>
@@ -44,12 +45,17 @@
   <main class="content">
     <section id="tab-overview">
       <div id="totals" class="totals"></div>
+      <p class="hint backup-hint" id="backup-hint" hidden>Давно не делали резервную копию. Нажми ⚙ вверху и скачай её: на бесплатном тарифе Supabase своих копий нет.</p>
 
       <div class="section-head">
         <h2>Счета</h2>
         <button class="btn small" id="add-account-btn">+ Счёт</button>
       </div>
       <div id="accounts" class="list"></div>
+      <details id="archived-box" class="archived" hidden>
+        <summary>Архивные счета</summary>
+        <div id="archived" class="list"></div>
+      </details>
 
       <div class="section-head"><h2>Последние операции</h2></div>
       <div id="recent" class="list"></div>
@@ -199,6 +205,47 @@
       <button type="submit" class="btn primary">Записать</button>
     </div>
   </form>
+</dialog>
+
+<!-- Диалог: правка счёта -->
+<dialog id="accedit-dialog">
+  <form id="accedit-form" method="dialog" class="sheet">
+    <h3>Счёт</h3>
+    <label>Название <input name="name" autocomplete="off" required></label>
+    <label>Тип
+      <select name="type">
+        <option value="card">Карта</option>
+        <option value="cash">Наличные</option>
+        <option value="other">Другое</option>
+      </select>
+    </label>
+    <label>Банк <input name="bank" autocomplete="off" placeholder="необязательно"></label>
+    <p class="hint" id="accedit-cur"></p>
+    <label>Сверить остаток: фактическая сумма на счёте
+      <input name="actual" inputmode="decimal" autocomplete="off" placeholder="оставь пустым, если не нужно">
+    </label>
+    <p class="hint">Если ввести сумму, отличающуюся от остатка в приложении, добавится операция «Корректировка остатка» на разницу.</p>
+    <p class="error" id="accedit-error" role="alert"></p>
+    <div class="row">
+      <button type="button" class="btn danger" id="accedit-archive">В архив</button>
+      <span class="grow"></span>
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Диалог: резервная копия -->
+<dialog id="data-dialog">
+  <div class="sheet">
+    <h3>Резервная копия</h3>
+    <p class="hint" id="backup-last"></p>
+    <button class="btn primary" id="backup-json">Скачать резервную копию (JSON)</button>
+    <button class="btn" id="backup-csv">Выгрузить операции в таблицу (CSV)</button>
+    <p class="hint">JSON содержит все счета, операции и план: при необходимости я могу восстановить из него базу. CSV открывается в Excel. Файлы хранят финансовые данные семьи, держи их в надёжном месте.</p>
+    <p class="error" id="data-error" role="alert"></p>
+    <div class="row"><button type="button" class="btn" data-close>Закрыть</button></div>
+  </div>
 </dialog>
 
 <div id="toast" class="toast" role="status" hidden></div>

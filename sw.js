@@ -1,5 +1,5 @@
 // Кэш оболочки приложения. Запросы к Supabase и CDN не кэшируются — данные всегда свежие.
-const CACHE = 'budget-shell-v5';
+const CACHE = 'budget-shell-v6';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icon.svg', 'icon-180.png'];
 
 self.addEventListener('install', (e) => {
