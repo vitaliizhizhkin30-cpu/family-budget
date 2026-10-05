@@ -36,6 +36,7 @@
 
   <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="overview">Обзор</button>
+    <button class="tab" data-tab="plan">План</button>
     <button class="tab" data-tab="ops">Операции</button>
   </nav>
 
@@ -51,6 +52,15 @@
 
       <div class="section-head"><h2>Последние операции</h2></div>
       <div id="recent" class="list"></div>
+    </section>
+
+    <section id="tab-plan" hidden>
+      <div id="plan-totals" class="totals"></div>
+      <div class="section-head">
+        <h2>Плановые поступления и платежи</h2>
+        <button class="btn small" id="add-plan-btn">+ В план</button>
+      </div>
+      <div id="plan-list" class="list"></div>
     </section>
 
     <section id="tab-ops" hidden>
@@ -110,6 +120,61 @@
     <div class="row">
       <button type="button" class="btn" data-close>Отмена</button>
       <button type="submit" class="btn primary">Создать</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Диалог: план -->
+<dialog id="pl-dialog">
+  <form id="pl-form" method="dialog" class="sheet">
+    <h3 id="pl-title">В план</h3>
+    <div class="seg" id="pl-kind">
+      <button type="button" data-kind="income" class="active">Поступление</button>
+      <button type="button" data-kind="expense">Платёж</button>
+    </div>
+    <label>Клиент / название <input name="title" autocomplete="off" placeholder="Например: Клиент А, абонплата" required></label>
+    <div class="row2">
+      <label>Сумма <input name="amount" inputmode="decimal" autocomplete="off" placeholder="0" required></label>
+      <label>Валюта <input name="currency" list="currency-list" value="RUB" maxlength="8" autocomplete="off" required></label>
+    </div>
+    <label>Ожидаемая дата <input type="date" name="due" required></label>
+    <label>Категория <select name="category"></select></label>
+    <label>Повторять
+      <select name="recurrence">
+        <option value="none">Не повторять</option>
+        <option value="weekly">Каждую неделю</option>
+        <option value="monthly">Каждый месяц</option>
+        <option value="yearly">Каждый год</option>
+      </select>
+    </label>
+    <label>Статус
+      <select name="status">
+        <option value="planned">Запланировано</option>
+        <option value="invoiced">Счёт выставлен</option>
+      </select>
+    </label>
+    <label>Комментарий <input name="note" autocomplete="off" placeholder="необязательно"></label>
+    <p class="error" id="pl-error" role="alert"></p>
+    <div class="row">
+      <button type="button" class="btn danger" id="pl-delete" hidden>Удалить</button>
+      <span class="grow"></span>
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Диалог: закрыть пункт плана -->
+<dialog id="done-dialog">
+  <form id="done-form" method="dialog" class="sheet">
+    <h3 id="done-title">Получено</h3>
+    <label>Сумма <input name="amount" inputmode="decimal" autocomplete="off" required></label>
+    <label>Счёт <select name="account" required></select></label>
+    <label>Дата <input type="date" name="date" required></label>
+    <p class="error" id="done-error" role="alert"></p>
+    <div class="row">
+      <button type="button" class="btn" data-close>Отмена</button>
+      <button type="submit" class="btn primary">Записать</button>
     </div>
   </form>
 </dialog>
